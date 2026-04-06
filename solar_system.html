@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solar System — Octos Live Wallpaper</title>
+    <style>
+        :root {
+            --accent: #ffc850;
+            --bg-dark: rgba(0, 0, 0, 0.7);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: #000; 
+            overflow: hidden; 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: white;
+            user-select: none;
+        }
+        canvas { display: block; }
+
+        /* UI Overlays */
+        #ui-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .panel {
+            pointer-events: auto;
+            background: var(--bg-dark);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+
+        #top-bar {
+            position: absolute;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 24px;
+            align-items: center;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+        .stat-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: rgba(255, 255, 255, 0.5);
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--accent);
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 32px;
+            right: 32px;
+            width: 240px;
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+        .control-group:last-child { margin-bottom: 0; }
+        
+        label {
+            display: block;
+            font-size: 11px;
+            margin-bottom: 6px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent);
+            background: rgba(255, 255, 255, 0.1);
+            height: 4px;
+            border-radius: 2px;
+            appearance: none;
+        }
+
+        #planet-info {
+            position: absolute;
+            top: 24px;
+            left: 24px;
+            width: 280px;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        #planet-info.visible { opacity: 1; }
+
+        h1 { font-size: 24px; margin-bottom: 8px; font-weight: 300; letter-spacing: 4px; }
+        .description { font-size: 13px; color: rgba(255, 255, 255, 0.6); line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div id="ui-layer">
+        <div id="top-bar" class="panel">
+            <div class="stat-item">
+                <div class="stat-label">System</div>
+                <div class="stat-value">SOLARIS</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">IST TIME</div>
+                <div class="stat-value" id="ist-clock">--:--:--</div>
+            </div>
+        </div>
+
+        <div id="planet-info" class="panel">
+            <h1 id="p-name">Earth</h1>
+            <div class="description" id="p-desc">
+                Our home planet, the only known world to support life.
+            </div>
+        </div>
+
+        <div id="controls" class="panel">
+            <div class="control-group">
+                <label>CAMERA ZOOM</label>
+                <input type="range" id="zoom-slider" min="50" max="1000" value="400">
+            </div>
+        </div>
+    </div>
+
+    <!-- Modern Three.js and OrbitControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // --- Octos API Compatibility ---
+        // Octos exposes window.octos for dynamic features
+        const octos = window.octos || {
+            onMessage: () => {},
+            setWallpaperProperty: () => {}
+        };
+
+        const BASE = 'textures/';
+        // Asset list for 8K textures
+        const ASSETS = {
+            sun: '8k_sun.jpg',
+            mercury: '8k_mercury.jpg',
+            venus: '8k_venus_surface.jpg',
+            earth: '8k_earth_daymap.jpg',
+            moon: '8k_moon.jpg',
+            mars: '8k_mars.jpg',
+            jupiter: '8k_jupiter.jpg',
+            saturn: '8k_saturn.jpg',
+            saturn_rings: '8k_saturn_ring_alpha.png',
+            uranus: '8k_uranus.jpg',
+            neptune: '8k_neptune.jpg',
+            stars: '8k_stars_milky_way.jpg'
+        };
+
+        // --- Core Scene ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 20000);
+        
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            logarithmicDepthBuffer: true,
+            powerPreference: "high-performance"
+        });
+        
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        document.body.appendChild(renderer.domElement);
+
+        const loader = new THREE.TextureLoader();
+        const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+
+        function load8K(key) {
+            const tex = loader.load(BASE + ASSETS[key]);
+            tex.anisotropy = maxAnisotropy;
+            tex.encoding = THREE.sRGBEncoding;
+            return tex;
+        }
+
+        // --- Lighting ---
+        const sunLight = new THREE.PointLight(0xffffff, 2, 0, 2);
+        scene.add(sunLight);
+        scene.add(new THREE.AmbientLight(0x111122, 0.5));
+
+        // --- Background (Skybox) ---
+        const skyGeo = new THREE.SphereGeometry(10000, 64, 64);
+        const skyMat = new THREE.MeshBasicMaterial({
+            map: load8K('stars'),
+            side: THREE.BackSide
+        });
+        const sky = new THREE.Mesh(skyGeo, skyMat);
+        scene.add(sky);
+
+        // --- Celestial Bodies ---
+        const planets = [];
+        const EPOCH_J2000 = 946728000000; // Jan 1, 2000, 12:00:00 UTC
+
+        const planetData = [
+            { name: 'Mercury', r: 2.4, a: 60, e: 0.2056, i: 7.00, w: 77.45, p: 87.969, l0: 252.25, tilt: 0.03, rot: 0.004, tex: 'mercury' },
+            { name: 'Venus',   r: 6.0, a: 90, e: 0.0067, i: 3.39, w: 131.57, p: 224.701, l0: 181.98, tilt: 177.3, rot: 0.002, tex: 'venus' },
+            { name: 'Earth',   r: 6.3, a: 130, e: 0.0167, i: 0.00, w: 102.94, p: 365.256, l0: 100.46, tilt: 23.44, rot: 0.01, tex: 'earth' },
+            { name: 'Mars',    r: 3.4, a: 170, e: 0.0934, i: 1.85, w: 336.04, p: 686.980, l0: 355.45, tilt: 25.19, rot: 0.009, tex: 'mars' },
+            { name: 'Jupiter', r: 24, a: 280, e: 0.0484, i: 1.30, w: 14.75, p: 4332.589, l0: 34.40, tilt: 3.13, rot: 0.04, tex: 'jupiter' },
+            { name: 'Saturn',  r: 20, a: 400, e: 0.0541, i: 2.49, w: 92.43, p: 10759.22, l0: 49.94, tilt: 26.73, rot: 0.038, tex: 'saturn', rings: true },
+            { name: 'Uranus',  r: 10, a: 520, e: 0.0472, i: 0.77, w: 170.96, p: 30685.4, l0: 313.23, tilt: 97.77, rot: 0.025, tex: 'uranus' },
+            { name: 'Neptune', r: 9.5, a: 620, e: 0.0086, i: 1.77, w: 44.97, p: 60189.0, l0: 304.88, tilt: 28.32, rot: 0.028, tex: 'neptune' }
+        ];
+
+        function getPlanetPosition(p) {
+            const daysSinceJ2000 = (Date.now() - EPOCH_J2000) / (1000 * 60 * 60 * 24);
+            const degToRad = Math.PI / 180;
+            
+            // 1. Mean anomaly
+            const M = (p.l0 - p.w + (360 * daysSinceJ2000 / p.p)) % 360 * degToRad;
+            
+            // 2. Eccentric anomaly (Kepler's Equation approximation)
+            let E = M;
+            for (let j = 0; j < 5; j++) {
+                E = M + p.e * Math.sin(E);
+            }
+            
+            // 3. Coordinates in orbital plane (Sun at focus)
+            const x_orb = p.a * (Math.cos(E) - p.e);
+            const z_orb = p.a * Math.sqrt(1 - p.e * p.e) * Math.sin(E);
+            
+            // 4. Position vector
+            const pos = new THREE.Vector3(x_orb, 0, z_orb);
+            
+            // 5. Rotate by longitude of perihelion
+            pos.applyAxisAngle(new THREE.Vector3(0, 1, 0), p.w * degToRad);
+            
+            // 6. Rotate by orbital inclination
+            pos.applyAxisAngle(new THREE.Vector3(1, 0, 0), p.i * degToRad);
+            
+            return pos;
+        }
+
+        // Sun
+        const sunGeo = new THREE.SphereGeometry(30, 128, 128);
+        const sunMat = new THREE.MeshBasicMaterial({ map: load8K('sun') });
+        const sun = new THREE.Mesh(sunGeo, sunMat);
+        scene.add(sun);
+
+        // Glow
+        const glowGeo = new THREE.SphereGeometry(32, 64, 64);
+        const glowMat = new THREE.MeshBasicMaterial({
+            color: 0xffaa33,
+            transparent: true,
+            opacity: 0.15,
+            blending: THREE.AdditiveBlending,
+            side: THREE.BackSide
+        });
+        const glow = new THREE.Mesh(glowGeo, glowMat);
+        sun.add(glow);
+
+        planetData.forEach(data => {
+            // Planet Container (for orbital position)
+            const planetGroup = new THREE.Group();
+            scene.add(planetGroup);
+
+            // Tilt Container (to orient the rotation axis)
+            const tiltGroup = new THREE.Group();
+            tiltGroup.rotation.z = data.tilt * (Math.PI / 180);
+            planetGroup.add(tiltGroup);
+
+            // Planet Mesh (actual sphere that rotates)
+            const geo = new THREE.SphereGeometry(data.r, 96, 96);
+            const mat = new THREE.MeshStandardMaterial({
+                map: load8K(data.tex),
+                roughness: 0.7,
+                metalness: 0.2
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            tiltGroup.add(mesh);
+
+            // Saturn Rings
+            if (data.rings) {
+                const rTex = load8K('saturn_rings');
+                const ringGeo = new THREE.RingGeometry(data.r * 1.4, data.r * 2.5, 128);
+                
+                const pos = ringGeo.attributes.position;
+                const uv = ringGeo.attributes.uv;
+                for (let i = 0; i < pos.count; i++) {
+                    const v3 = new THREE.Vector3().fromBufferAttribute(pos, i);
+                    const dist = v3.length();
+                    const u = (dist - data.r * 1.4) / (data.r * 1.1);
+                    uv.setXY(i, u, 0.5);
+                }
+
+                const ringMat = new THREE.MeshBasicMaterial({
+                    map: rTex,
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 0.8,
+                    depthWrite: false
+                });
+                const rings = new THREE.Mesh(ringGeo, ringMat);
+                rings.rotation.x = Math.PI / 2;
+                tiltGroup.add(rings);
+            }
+
+            // --- Elliptical Orbit Path ---
+            const orbitPoints = [];
+            const degToRad = Math.PI / 180;
+            for (let i = 0; i <= 256; i++) {
+                const E = (i / 256) * Math.PI * 2;
+                
+                const x_orb = data.a * (Math.cos(E) - data.e);
+                const z_orb = data.a * Math.sqrt(1 - data.e * data.e) * Math.sin(E);
+                
+                const pt = new THREE.Vector3(x_orb, 0, z_orb);
+                pt.applyAxisAngle(new THREE.Vector3(0, 1, 0), data.w * degToRad);
+                pt.applyAxisAngle(new THREE.Vector3(1, 0, 0), data.i * degToRad);
+                
+                orbitPoints.push(pt);
+            }
+            const orbitLine = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints(orbitPoints),
+                new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.15 })
+            );
+            scene.add(orbitLine);
+
+            // Earth moon
+            if (data.name === 'Earth') {
+                const moonGroup = new THREE.Group();
+                planetGroup.add(moonGroup);
+                
+                const moonGeo = new THREE.SphereGeometry(1.2, 32, 32);
+                const moonMat = new THREE.MeshStandardMaterial({
+                    map: load8K('moon'),
+                    roughness: 0.9
+                });
+                const moonMesh = new THREE.Mesh(moonGeo, moonMat);
+                moonMesh.position.x = 12; // Visual distance
+                moonGroup.add(moonMesh);
+                
+                // Tilt moon orbit slightly
+                moonGroup.rotation.z = 5.14 * (Math.PI / 180);
+                
+                planets.push({ mesh: moonMesh, data: { rot: 0.01 }, isMoon: true, group: moonGroup });
+            }
+
+            planets.push({ planetGroup, mesh, data });
+        });
+
+        // --- Raycasting for Planet Selection ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        const pName = document.getElementById('p-name');
+        const pDesc = document.getElementById('p-desc');
+        const pInfo = document.getElementById('planet-info');
+
+        const planetDescriptions = {
+            'Mercury': 'The smallest planet in our solar system and closest to the Sun—is only slightly larger than Earth\'s Moon.',
+            'Venus': 'Spinning in the opposite direction to most planets, Venus is the hottest planet, and one of the brightest objects in the night sky.',
+            'Earth': 'Our home planet is the only place we know of so far that’s inhabited by living things.',
+            'Mars': 'Mars is a dusty, cold, desert world with a very thin atmosphere. There is strong evidence Mars was—billions of years ago—wetter and warmer.',
+            'Jupiter': 'Jupiter is more than twice as massive than the other planets of our solar system combined.',
+            'Saturn': 'Adorned with a dazzling, complex system of icy rings, Saturn is unique in our solar system.',
+            'Uranus': 'Uranus is the seventh planet from the Sun, and has the third-largest diameter in our solar system.',
+            'Neptune': 'Dark, cold, and whipped by supersonic winds, ice giant Neptune is the eighth and most distant planet in our solar system.'
+        };
+
+        window.addEventListener('click', (event) => {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(planets.filter(p => !p.isMoon).map(p => p.mesh));
+
+            if (intersects.length > 0) {
+                const clickedPlanet = planets.find(p => p.mesh === intersects[0].object);
+                if (clickedPlanet) {
+                    pName.textContent = clickedPlanet.data.name;
+                    pDesc.textContent = planetDescriptions[clickedPlanet.data.name];
+                    pInfo.classList.add('visible');
+                    
+                    // Zoom to planet
+                    const targetPos = new THREE.Vector3();
+                    clickedPlanet.mesh.getWorldPosition(targetPos);
+                    
+                    // Smoothly move camera towards planet
+                    // (OrbitControls will handle the rest)
+                }
+            } else {
+                 pInfo.classList.remove('visible');
+             }
+         });
+
+         // --- Interaction & Controls ---
+         const controls = new THREE.OrbitControls(camera, renderer.domElement);
+         controls.enableDamping = true;
+         controls.dampingFactor = 0.05;
+         controls.minDistance = 50;
+         controls.maxDistance = 2000;
+         controls.maxPolarAngle = Math.PI / 1.8;
+
+         const zoomSlider = document.getElementById('zoom-slider');
+         const istClock = document.getElementById('ist-clock');
+
+         function updateClock() {
+             const now = new Date();
+             const timeStr = now.toLocaleTimeString('en-IN', {
+                 timeZone: 'Asia/Kolkata',
+                 hour: '2-digit',
+                 minute: '2-digit',
+                 second: '2-digit',
+                 hour12: true
+             });
+             istClock.textContent = timeStr;
+         }
+
+         zoomSlider.addEventListener('input', (e) => {
+             const r = parseFloat(e.target.value);
+             const dir = camera.position.clone().normalize();
+             camera.position.copy(dir.multiplyScalar(r));
+         });
+
+         camera.position.set(0, 150, 400);
+         controls.update();
+
+         // --- Animation Loop ---
+         function animate() {
+             requestAnimationFrame(animate);
+             
+             updateClock();
+
+             // Rotate Sun
+             sun.rotation.y += 0.002;
+             
+             // Move Planets strictly based on live time
+             planets.forEach(p => {
+                 if (p.isMoon) {
+                    p.group.rotation.y += 0.01; // Moon orbit rotation
+                    p.mesh.rotation.y += 0.005; // Moon self-rotation
+                    return;
+                 }
+                 const pos = getPlanetPosition(p.data);
+                 p.planetGroup.position.copy(pos);
+                 p.mesh.rotation.y += p.data.rot * 0.1; // Small rotation for visual life
+             });
+
+             controls.update();
+             renderer.render(scene, camera);
+             
+             // Sync slider back
+             zoomSlider.value = camera.position.length();
+         }
+
+         animate();
+
+         // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Octos API Hooks ---
+        // You can add logic here to respond to Octos events
+        // e.g. Syncing time with actual system time or reacting to music
+    </script>
+</body>
+</html>
