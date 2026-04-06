@@ -2,8 +2,6 @@
 
 An astronomically accurate, high-fidelity 3D Solar System live wallpaper built with Three.js. This wallpaper is fully interactive and optimized for the **Octos** dynamic desktop engine.
 
-![Solar System Preview](https://via.placeholder.com/800x450?text=3D+Solar+System+Live+Wallpaper)
-
 ## ✨ Features
 
 - **Astronomically Accurate**: Planets are positioned in real-time based on the J2000 epoch and synced to **Indian Standard Time (IST)**.
